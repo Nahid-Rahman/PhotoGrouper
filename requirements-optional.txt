@@ -1,0 +1,3 @@
+# Optional: HEIC (iPhone) and camera RAW/DNG support
+pillow-heif
+rawpy
