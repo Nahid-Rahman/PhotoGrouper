@@ -15,6 +15,8 @@ Regular duplicate finders mostly catch exact copies. Photo Grouper also catches:
 
 Each set goes into `_similar_groups\group_001`, `group_002`, … inside your folder. The best copy (highest resolution) gets a `KEEP_` prefix, so you can quickly decide what to delete.
 
+<p align="center"><img src="docs/screenshots/main-window.png" width="620" alt="Photo Grouper window after scanning a folder: 5 groups found, 13 photos"></p>
+
 ## Download
 
 1. Go to the [**Releases**](../../releases/latest) page and download `PhotoGrouper.exe`.
@@ -29,6 +31,10 @@ Each set goes into `_similar_groups\group_001`, `group_002`, … inside your fol
 3. **Move into group folders**: once the report looks right, this moves each set into its own folder.
 4. Go through the group folders and delete the copies you don't want. Photo Grouper never deletes anything itself.
 5. **Undo**: puts every photo back where it was, with its original name.
+
+The report shows each group side by side. The best copy has a green border:
+
+<p align="center"><img src="docs/screenshots/report.png" width="620" alt="Scan report: a sunset photo with its backup copy and WhatsApp copy, and a mountain photo with a rotated copy and a WhatsApp copy"></p>
 
 ### Settings
 
