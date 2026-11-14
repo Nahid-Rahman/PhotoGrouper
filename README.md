@@ -84,7 +84,7 @@ Matches are joined into groups with union-find.
 You need Windows and Python 3.11–3.13.
 
 ```bat
-git clone https://github.com/<your-username>/PhotoGrouper.git
+git clone https://github.com/Nahid-Rahman/PhotoGrouper.git
 cd PhotoGrouper
 build_exe.bat
 ```
