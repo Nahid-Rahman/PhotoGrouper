@@ -34,7 +34,7 @@ if errorlevel 1 (
   pause
   exit /b
 )
-"%VPY%" -m pip install -r requirements-optional.txt || echo (Optional HEIC/RAW support could not be installed. Those photos will be skipped.)
+"%VPY%" -m pip install -r requirements-optional.txt || echo (Optional camera RAW support could not be installed. RAW photos will be skipped.)
 echo.
 set "EXTRA="
 "%VPY%" -c "import pillow_heif" 2>nul && set "EXTRA=%EXTRA% --collect-binaries pillow_heif"

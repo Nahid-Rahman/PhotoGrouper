@@ -2,8 +2,9 @@
 grouper_core.py - engine for Photo Grouper.
 Finds exact copies, resized/recompressed/rotated/mirrored copies (perceptual hash),
 and optionally photos that look the same (CLIP AI via ONNX Runtime).
-Nothing is ever deleted: groups are moved into <folder>\\_similar_groups\\group_XXX,
-the best copy gets a KEEP_ prefix, and every move can be undone.
+Nothing is deleted permanently: groups are moved into <folder>\\_similar_groups\\group_XXX,
+the best copy gets a KEEP_ prefix, and every move can be undone. Extra copies can be sent to
+the Windows Recycle Bin on request.
 """
 import base64, csv, hashlib, html, io, os, pickle, shutil, time, urllib.request
 from concurrent.futures import ProcessPoolExecutor
@@ -35,7 +36,7 @@ MODEL_URL = "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/on
 MODEL_NAME = "clip_vit_b32_vision_quantized.onnx"
 EMB_KEY = "emb_onnx_q"
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 class FriendlyError(Exception):
@@ -360,7 +361,8 @@ Extra copies take about {human(extra)} &middot; green border = best copy (gets K
 def paths(root):
     work = os.path.join(root, WORK_DIR)
     return dict(work=work, cache=os.path.join(work, "cache.pkl"), plan=os.path.join(work, "plan.pkl"),
-                log=os.path.join(work, "moved_log.csv"), report=os.path.join(work, "report.html"))
+                log=os.path.join(work, "moved_log.csv"), report=os.path.join(work, "report.html"),
+                recycled=os.path.join(work, "recycled_log.csv"))
 
 
 def scan_files(root):
@@ -472,7 +474,103 @@ def move(root, log=print):
     return moved, skipped, os.path.join(root, GROUP_DIR)
 
 
+def find_extras(root):
+    """Photos in the group folders whose name does not start with KEEP_.
+    Groups without any KEEP_ photo are left out, so a group is never emptied completely.
+    Returns (list of paths, total bytes)."""
+    gd = os.path.join(os.path.abspath(root), GROUP_DIR)
+    extras = []
+    if not os.path.isdir(gd):
+        return extras, 0
+    for g in sorted(os.listdir(gd)):
+        gpath = os.path.join(gd, g)
+        if not os.path.isdir(gpath): continue
+        files = [f for f in os.listdir(gpath) if os.path.isfile(os.path.join(gpath, f))
+                 and os.path.splitext(f)[1].lower() in IMG_EXT]
+        if not any(f.upper().startswith("KEEP_") for f in files): continue
+        extras += [os.path.join(gpath, f) for f in sorted(files) if not f.upper().startswith("KEEP_")]
+    return extras, sum(os.path.getsize(p) for p in extras)
+
+
+def has_extras(root):
+    try:
+        return bool(find_extras(root)[0])
+    except OSError:
+        return False
+
+
+def _check_recycle_bin(root):
+    """Removable and network drives have no Recycle Bin: Windows would delete permanently."""
+    if os.name != "nt":
+        raise FriendlyError("Sending to the Recycle Bin is only available on Windows.")
+    import ctypes
+    drive = os.path.splitdrive(os.path.abspath(root))[0]
+    if drive.startswith("\\\\"):
+        kind = 4
+    else:
+        kind = ctypes.windll.kernel32.GetDriveTypeW(drive + "\\")
+    if kind in (2, 4, 5):  # DRIVE_REMOVABLE, DRIVE_REMOTE, DRIVE_CDROM
+        raise FriendlyError("This folder is on a USB, memory-card or network drive. Windows has no "
+                            "Recycle Bin there, so the photos would be deleted for good.\n\n"
+                            "Delete the extra copies by hand if you are sure, or copy the photos to "
+                            "a folder on this computer first.")
+
+
+def _to_recycle_bin(paths_):
+    """Send files to the Windows Recycle Bin (never a permanent delete)."""
+    import ctypes
+    from ctypes import wintypes
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR), ("fFlags", ctypes.c_ushort),
+                    ("fAnyOperationsAborted", wintypes.BOOL), ("hNameMappings", ctypes.c_void_p),
+                    ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+    FO_DELETE = 3
+    flags = 0x40 | 0x10 | 0x04 | 0x4000  # ALLOWUNDO | NOCONFIRMATION | SILENT | WANTNUKEWARNING
+    for s in range(0, len(paths_), 200):
+        text = "\0".join(paths_[s:s + 200]) + "\0\0"  # list must end with two NULs
+        buf = (ctypes.c_wchar * len(text))(*text)
+        op = SHFILEOPSTRUCTW(None, FO_DELETE, ctypes.cast(buf, wintypes.LPCWSTR), None, flags, False, None, None)
+        ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+
+
+def recycle_extras(root, log=print):
+    """Send every photo in the group folders whose name does not start with KEEP_ to the Recycle Bin.
+    Returns (number recycled, bytes freed, number left because they could not be removed)."""
+    root = os.path.abspath(root); P = paths(root)
+    extras, _ = find_extras(root)
+    if not extras:
+        raise FriendlyError("There are no extra copies to remove. Every group folder only has its "
+                            "KEEP_ photo left (or Move has not been done yet).")
+    _check_recycle_bin(root)
+    sizes = {p: os.path.getsize(p) for p in extras}
+    _to_recycle_bin(extras)
+    gone = [p for p in extras if not os.path.exists(p)]
+    left = len(extras) - len(gone)
+    os.makedirs(P["work"], exist_ok=True)
+    new = not os.path.exists(P["recycled"])
+    with open(P["recycled"], "a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        if new: w.writerow(["path", "time"])
+        for p in gone:
+            w.writerow([p, time.strftime("%Y-%m-%d %H:%M:%S")])
+    for p in extras:
+        if p in gone: log(f"Recycle Bin: {os.path.relpath(p, root)}")
+        else: log(f"Could not remove (open in another program?): {os.path.relpath(p, root)}")
+    return len(gone), sum(sizes[p] for p in gone), left
+
+
+def recycled_count(root):
+    p = paths(os.path.abspath(root))["recycled"]
+    if not os.path.exists(p): return 0
+    with open(p, newline="", encoding="utf-8") as f:
+        return max(0, sum(1 for _ in f) - 1)
+
+
 def undo(root):
+    """Returns (photos put back, photos that are in the Recycle Bin and must be restored from there)."""
     root = os.path.abspath(root); P = paths(root)
     if not os.path.exists(P["log"]):
         raise FriendlyError("There is nothing to undo in this folder.")
@@ -486,9 +584,13 @@ def undo(root):
                 shutil.move(r["dst"], r["src"]); back += 1
             except PermissionError:
                 pass
-    os.replace(P["log"], P["log"] + f".undone_{int(time.time())}")
+    stamp = int(time.time())
+    os.replace(P["log"], P["log"] + f".undone_{stamp}")
+    recycled = recycled_count(root)
+    if os.path.exists(P["recycled"]):
+        os.replace(P["recycled"], P["recycled"] + f".undone_{stamp}")
     gd = os.path.join(root, GROUP_DIR)
     if os.path.isdir(gd):
         for dp, dns, fns in os.walk(gd, topdown=False):
             if not os.listdir(dp): os.rmdir(dp)
-    return back
+    return back, recycled
